@@ -1,0 +1,789 @@
+---
+title: "Experiments 1 to 4, comparison"
+author: "Bodo Winter"
+date: "7/3/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Preliminaries:
+
+Load packages:
+
+```{r}
+library(tidyverse)
+library(brms)
+library(lubridate)
+```
+
+Load in data:
+
+```{r}
+E1 <- read_csv('../data/cleaned_data/E1_cleaned.csv')
+E2 <- read_csv('../data/cleaned_data/E2_cleaned.csv')
+E3 <- read_csv('../data/cleaned_data/E3_cleaned.csv')
+E4 <- read_csv('../data/cleaned_data/E4_cleaned.csv')
+```
+
+Get subsets for merging:
+
+```{r}
+E1 <- select(E1, Notice, Age, Gender,
+             Gesture, IP, StartTime, Response) %>% 
+  rename(Direction = Gesture)
+E2 <- select(E2, Notice, Age, Gender, Direction, IP, StartTime, Response, LikeScale)
+E3 <- select(E3, Notice, Age, Gender, Direction, IP, StartTime, Response, LikeScale)
+E4 <- select(E4, Notice, Age, Gender, Direction, IP, StartTime, Response, LikeScale)
+```
+
+Make the date formats the same and add experiment identifier:
+
+```{r}
+E1 <- mutate(E1,
+             StartTime = as_datetime(StartTime),
+             Experiment = 'Experiment 1')
+E2 <- mutate(E2,
+             StartTime = as_datetime(StartTime),
+             Experiment = 'Experiment 2')
+E3 <- mutate(E3,
+             StartTime = as_datetime(StartTime),
+             Experiment = 'Experiment 3')
+E4 <- mutate(E4,
+             StartTime = as_datetime(StartTime),
+             Experiment = 'Experiment 4')
+```
+
+Merge those:
+
+```{r}
+xdata <- bind_rows(E1, E2, E3, E4)
+```
+
+What is the overall Monday/Friday responses? (Overview)
+
+```{r}
+xdata %>% count(Experiment, Response) %>% 
+  spread(Response, -Experiment) %>% 
+  mutate(FridayProp = Friday / (Friday + Monday),
+         FridayProp = round(FridayProp, 2),
+         MondayProp = 1 - FridayProp)
+```
+
+Center the overall LikeScale variable:
+
+```{r}
+xdata <- mutate(xdata,
+                LikeScale_c = LikeScale - mean(LikeScale, na.rm = TRUE),
+                DirectionPlot = str_c(Direction, '\ngesture'),
+                Direction = factor(Direction, levels = c('backward', 'forward')),
+                DirectionPlot = factor(DirectionPlot, levels = c('backward\ngesture', 'forward\ngesture')))
+```
+
+Sum-code the Direction predictor:
+
+```{r}
+contrasts(xdata$Direction) <- contr.sum(2) / 2 * -1
+```
+
+Code the Monday/Friday effect so that it is consistent (with "Monday" being the reference level):
+
+```{r}
+xdata <- mutate(xdata,
+                Response = factor(Response, levels = c('Monday', 'Friday')))
+```
+
+
+## Make a plot of the overall Monday/Friday responses:
+
+Plot:
+
+```{r}
+xdata %>%
+  count(Experiment, Response) %>%
+  spread(Response, n) %>%
+  mutate(Sum = Monday + Friday,
+         Monday = Monday / Sum,
+         Friday = Friday / Sum) %>%
+  select(-Sum) %>%
+  gather(key = 'Response', value = 'n',
+         -Experiment) %>%
+  mutate(Response = factor(Response,
+                           levels = c('Monday', 'Friday'))) %>%
+  rename(Proportion = n) %>% 
+  ggplot(aes(x = Experiment, y = Proportion, fill = Response)) +
+  geom_bar(stat = 'identity', col = 'black',
+           position = position_stack(reverse = TRUE),
+           width = 0.4) + 
+  scale_fill_manual(values = c('#FDE725FF', '#21908CFF')) +
+  theme_minimal() +
+  theme(legend.position = 'right') +
+  labs(title = 'Monday/Friday responses across all experiments') +
+  ylab('Proportion\n') +
+  xlab('') +
+  theme(plot.title = element_text(face = 'bold', size = 20, hjust = 0.5),
+        axis.title = element_text(face = 'bold', size = 24),
+        axis.text.x = element_text(face = 'bold', size = 16),
+        axis.text.y = element_text(face = 'bold', size = 12),
+        plot.caption = element_text(size = 14),
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank())
+ggsave('../figures/all_experiments.png', width = 10, height = 4)
+```
+
+## Does likeability explain the by-experiment differences?
+
+What is the average likeability acrosss experiments?
+
+```{r, fig.width = 9, fig.height = 6}
+xdata %>% 
+  filter(Experiment != 'Experiment 1') %>% 
+  ggplot(aes(x = LikeScale, fill = Experiment)) +
+  geom_density(alpha = 0.5) + theme_minimal()
+```
+
+What is the average likeability acrosss experiments?
+
+```{r, fig.width = 9, fig.height = 6}
+xdata %>% 
+  filter(Experiment != 'Experiment 1') %>% 
+  ggplot(aes(x = Experiment, fill = Experiment, y = LikeScale)) +
+  geom_boxplot() + theme_minimal()
+```
+
+Test this:
+
+Set the parameters for a Bayesian analysis:
+
+```{r}
+# For parallel processing:
+
+options(mc.cores=parallel::detectCores())
+
+# For handling the MCMC sampling:
+
+my_controls <- list(adapt_delta = 0.99,
+                    max_treedepth = 13)
+```
+
+Set regularizing priors on betas:
+
+```{r}
+my_priors <- c(prior(normal(0, 1), class = b))
+```
+
+Specify and run the model:
+
+```{r, message = FALSE}
+like_mdl <- brm(LikeScale ~ Experiment,
+              data = filter(xdata, Experiment != 'Experiment 1'),
+              family = poisson,
+              init = 0,
+              chains = 8,
+              warmup = 2000,
+              iter = 8000,
+              seed = 42,
+              prior = my_priors,
+              control = my_controls)
+like_null <- brm(LikeScale ~ Experiment,
+              data = filter(xdata, Experiment != 'Experiment 1'),
+              family = poisson,
+              init = 0,
+              chains = 8,
+              warmup = 2000,
+              iter = 8000,
+              seed = 42,
+              control = my_controls)
+save(like_mdl, file = '../models/like_mdl.RData')
+save(like_null, file = '../models/like_null.RData')
+```
+
+Check model:
+
+```{r}
+summary(like_mdl)
+```
+
+Compare loos:
+
+```{r}
+like_loo <- loo(like_mdl, reloo = TRUE)
+like_loo_null <- loo(like_null, reloo = TRUE)
+loo_compare(like_loo_null, like_loo)
+```
+
+Not much going on. Check marginal effects:
+
+```{r}
+marginal_effects(like_mdl, effects = 'Experiment')
+```
+
+Extremely overlapping. So the overall differences don't seem to be due to likeability.
+
+## Across model influence of likeability:
+
+Perform analysis:
+
+```{r}
+all_social_mdl <- brm(Response ~ Direction * LikeScale_c,
+              data = xdata,
+              family = bernoulli,
+              init = 0,
+              chains = 8,
+              warmup = 2000,
+              iter = 8000,
+              seed = 42,
+              prior = my_priors,
+              control = my_controls)
+save(all_social_mdl, file = '../models/all_social_mdl.RData')
+```
+
+Summarize:
+
+```{r}
+summary(all_social_mdl)
+```
+
+Load social models:
+
+```{r}
+load('../models/E2_social_mdl.RData')
+load('../models/E3_social_mdl.RData')
+load('../models/E4_social_mdl.RData')
+```
+
+Get the posteriors of each model:
+
+```{r}
+E2_post <- posterior_samples(E2_social_mdl)
+E3_post <- posterior_samples(E3_social_mdl)
+E4_post <- posterior_samples(E4_social_mdl)
+all_post <- posterior_samples(all_social_mdl)
+```
+
+Extract the interaction coefficients:
+
+```{r}
+E2_int <- E2_post$`b_Direction1:LikeScale_c`
+E3_int <- E3_post$`b_Direction1:LikeScale_c`
+E4_int <- E4_post$`b_Direction1:LikeScale_c`
+all_int <- all_post$`b_Direction1:LikeScale_c`
+```
+
+Check the posterior probability of the overall coefficient being above zero:
+
+```{r}
+sum(all_int > 0) / length(all_int)
+```
+
+
+If we check how many of the posteriors together are over 0:
+
+```{r}
+all_posts <- c(E2_int, E3_int, E4_int)
+1 - sum(all_posts > 0) / length(all_posts)
+```
+
+Get them all into one table for plotting:
+
+```{r}
+like_tib <- tibble(Experiment = c('Experiment 2', 'Experiment 3', 'Experiment 4', 'All'),
+                   M = c(mean(E2_int), mean(E3_int), mean(E4_int), mean(all_int)),
+       LB = c(quantile(E2_int, 0.025), quantile(E3_int, 0.025), quantile(E4_int, 0.025), quantile(all_int, 0.025)),
+       UB = c(quantile(E2_int, 0.975), quantile(E3_int, 0.975), quantile(E4_int, 0.975), quantile(all_int, 0.975))) %>% 
+  mutate(Experiment = factor(Experiment,
+                             levels = c('Experiment 2', 'Experiment 3', 'Experiment 4', 'All')))
+```
+
+Make a plot of this:
+
+```{r}
+like_tib %>% 
+  ggplot(aes(x = Experiment, y = M)) +
+  geom_errorbar(aes(ymin = LB, ymax = UB), width = 0.15, lwd = 1.25) +
+  geom_hline(aes(yintercept = 0), linetype = 2) + 
+  geom_point(size = 6, pch = 15) +
+  xlab('') +
+  ylab('Interaction\ncoefficient\n') +
+  labs(title = 'Likeability * Gesture Direction\ninteraction across experiments',
+       caption = str_c('N = ', nrow(filter(xdata, Experiment != 'Experiment 1')), ', Amazon Mechanical Turk')) +
+  theme_minimal() +
+  theme(plot.title = element_text(face = 'bold', size = 20, hjust = 0.5),
+        axis.title = element_text(face = 'bold', size = 20),
+        axis.text.x = element_text(face = 'bold', size = 16),
+        axis.text.y = element_text(face = 'bold', size = 12),
+        strip.text.x = element_text(face = 'bold', size = 20),
+        plot.caption = element_text(size = 14),
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank())
+ggsave('../figures/likeability1.png', width = 10.5, height = 5)
+```
+
+## Make a plot of the high versus low likeables:
+
+Look at the distribution of like scale to see what a median split would do:
+
+```{r}
+xdata %>% filter(!is.na(LikeScale)) %>% 
+  count(LikeScale) %>% 
+  mutate(Prop = n / sum(n))
+```
+
+What is the median in comparison to this?
+
+```{r}
+median(xdata$LikeScale, na.rm = TRUE)
+```
+
+Look at above and below median, but exclude the median since counting it towards either the "low" or "high" category would skew the results and since this is the largest number of them.
+
+
+```{r}
+like_only <- xdata %>% 
+  filter(!is.na(LikeScale)) %>% 
+  filter(LikeScale != 12) %>% 
+mutate(LikeMedian = ifelse(LikeScale > 12, 'high likeability', 'low likeability'),
+         LikeMedian = factor(LikeMedian,
+                             levels = c('low likeability', 'high likeability')))
+```
+
+Look at the counts of this:
+
+```{r}
+like_tab <- with(like_only, table(Direction, Response, LikeMedian))
+low <- like_tab[, , 1]
+high <- like_tab[, , 2]
+low
+high
+round(prop.table(low, 1), 2)
+round(prop.table(high, 1), 2)
+```
+
+Make a plot of this:
+
+```{r}
+like_only %>% group_by(LikeMedian, Direction) %>% 
+  count(Response) %>% 
+  spread(Response, n, fill = 0) %>% 
+  mutate(Friday = Friday / (Friday + Monday),
+         Monday = 1 - Friday) %>%
+  gather(key = 'Response', value = 'Proportion', -c(LikeMedian:Direction)) %>% 
+  ggplot(aes(x = Direction, y = Proportion, fill = Response)) +
+  geom_bar(stat = 'identity', col = 'black', width = 0.6) +
+  scale_fill_manual(values = c('#21908CFF', '#FDE725FF')) +
+  facet_wrap(~LikeMedian) +
+  xlab('') +
+  theme_minimal() +
+  theme(plot.title = element_text(face = 'bold', size = 20, hjust = 0.5),
+        axis.title = element_text(face = 'bold', size = 24),
+        axis.text.x = element_text(face = 'bold', size = 20),
+        axis.text.y = element_text(face = 'bold', size = 12),
+        strip.text.x = element_text(face = 'bold', size = 20),
+        plot.caption = element_text(size = 14),
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank())
+ggsave('../figures/likeability_median_split.png', width = 9, height = 5)
+```
+
+## Does likeability influence gesture awareness?
+
+Factor code noticing (from least to most) for plotting and easy reporting:
+
+```{r}
+mylevs <- c('Definitely not', 'Probably not',
+            'Might or might not', 'Probably yes',
+            'Definitely yes')
+xdata <- mutate(xdata,
+                Notice = factor(Notice, levels = mylevs))
+```
+
+Check whether likeability could influence noticing with a plot:
+
+```{r, fig.width = 8, fig.height = 6}
+xdata %>% ggplot(aes(x = Notice, y = LikeScale, fill = Notice)) +
+  geom_boxplot() + theme_minimal()
+```
+
+Look at awareness across experiments:
+
+```{r}
+with(xdata, table(Experiment, Notice))
+round(prop.table(with(xdata, table(Experiment, Notice)), 1), 2)
+```
+
+Report means:
+
+```{r}
+xdata %>% group_by(Notice) %>% 
+  summarize(M = mean(LikeScale, na.rm = TRUE))
+```
+
+Make a model of this, des likeability influence gesture awareness?
+
+```{r}
+xdata <- mutate(xdata,
+                Notice = as.ordered(Notice))
+awareness_mdl <- brm(Notice ~ LikeScale,
+              data = xdata,
+              family = cumulative('logit'),
+              init = 0,
+              chains = 8,
+              warmup = 2000,
+              iter = 8000,
+              seed = 42,
+              prior = my_priors,
+              control = my_controls)
+save(awareness_mdl, file = '../models/awareness_mdl.RData')
+```
+
+Check this model:
+
+```{r}
+summary(awareness_mdl)
+```
+
+Check whether the relationship between likeability and gesture direction still holds even if the awareness is controlled for:
+
+```{r}
+social_notice_mdl <- brm(Response ~ Direction * LikeScale_c +
+                       Notice + Notice:LikeScale_c,
+              data = xdata,
+              family = bernoulli,
+              init = 0,
+              chains = 8,
+              warmup = 2000,
+              iter = 8000,
+              seed = 42,
+              prior = my_priors,
+              control = my_controls)
+save(social_notice_mdl, file = '../models/social_notice_mdl.RData')
+```
+
+Summarize this model:
+
+```{r}
+summary(social_notice_mdl)
+```
+
+Check the posterior probabilities:
+
+```{r}
+social_posts <- posterior_samples(social_notice_mdl)
+
+# Posterior probability of interaction being > 0:
+
+sum(social_posts$'b_Direction1:LikeScale_c' > 0) / nrow(social_posts)
+```
+
+## Exploring the influence of individual differences:
+
+Look at the age effect:
+
+```{r}
+library(Hmisc)
+xdata <- mutate(xdata,
+                Age_c = cut2(Age, g = 10))
+```
+
+Plot this across time:
+
+```{r}
+xdata %>%
+  count(Age_c, Response) %>% 
+  spread(Response, -Age_c) %>% 
+  mutate(Sum = Monday + Friday,
+         Monday = Monday / Sum,
+         Friday = Friday / Sum) %>% 
+  gather(key = 'Response', value = 'Proportion', -Age_c) %>%
+  filter(Response != 'Sum') %>% 
+  ggplot(aes(x = Age_c, y = Proportion, fill = Response)) +
+  geom_bar(stat = 'identity', col = 'black',
+           position = position_stack(reverse = TRUE),
+           width = 0.5) + 
+    scale_fill_manual(values = c('#FDE725FF', '#21908CFF')) +
+  theme_minimal() +
+  theme(legend.position = 'right')
+```
+
+Looks to be a small pattern.
+
+Let's look at gender. First, do they overall respond with more Monday's or Friday's?
+
+```{r}
+gen_tab <- with(xdata, table(Gender, Response))
+gen_tab
+round(prop.table(gen_tab, 1), 2)
+```
+
+Wmen report slightly more "Friday" responses, men slightly more "Monday" responses. The "other" category should be discounted since it's only 5 responses (not enough to be reliable).
+
+Check what the direction effect is:
+
+```{r}
+gen_tab <- with(xdata, table(Direction, Response, Gender))
+men <- gen_tab[, , 2]
+women <- gen_tab[, , 1]
+```
+
+Look at this:
+
+```{r}
+men
+women
+```
+
+Proportions:
+
+```{r}
+prop.table(men, 1)
+prop.table(women, 1)
+```
+
+For modeling the gender effect, we need to exclude the "other" category (too few data points).
+
+```{r}
+gen_only <- xdata %>% 
+  filter(Gender != 'other') %>% 
+  mutate(Gender = factor(Gender, levels = c('male', 'female')))
+contrasts(gen_only$Gender) <- contr.sum(2) / 2 * -1
+```
+
+Check:
+
+```{r}
+contrasts(gen_only$Gender)
+```
+
+In this particular analysis, men are coded as -0.5, and women as +0.5.
+
+Model the gender effect:
+
+```{r}
+gender_mdl <- brm(Response ~ Direction * (Gender + LikeScale_c),
+                  data = gen_only,
+              family = bernoulli,
+              init = 0,
+              chains = 8,
+              warmup = 2000,
+              iter = 8000,
+              seed = 42,
+              prior = my_priors,
+              control = my_controls)
+save(gender_mdl, file = '../models/gender_mdl.RData')
+```
+
+Summarize this:
+
+```{r}
+summary(gender_mdl)
+```
+
+The likeability effect is still strong! There seems to be a gender effect with women reporting more Friday's then men! 
+
+## Exploring the influence of the time of the day:
+
+Extract time of the day information:
+
+```{r}
+library(hms)
+xdata <- mutate(xdata,
+                Time = as.hms(StartTime),
+                Hour = hour(Time))
+```
+
+Check counts:
+
+```{r}
+myhours <- xdata %>% count(Hour)
+myhours
+```
+
+The problem with this information is that it doesn't look at time zone, and America covers several time zones. So we cannot really use this to disentangle the effects of time versus the effects of population (e.g., East Coasters versus West Coasters, which would be signing on to Amazon Mechanical Turk at different times).
+
+Find hours that have less than 5 responses (to be excluded from plotting).
+
+```{r}
+these_hours <- filter(myhours, n < 20) %>% pull(Hour)
+```
+
+Plot time of the day against Monday/Friday responses:
+
+```{r}
+xdata %>% group_by(Hour) %>% 
+  count(Response) %>% 
+  spread(Response, n, fill = 0) %>% 
+  mutate(Friday = Friday / (Friday + Monday),
+         Monday = 1 - Friday) %>%
+  gather(key = 'Response', value = 'Proportion', -Hour) %>% 
+  filter(!Hour %in% these_hours) %>% 
+  filter(Hour > 5) %>% 
+  ggplot(aes(x = Hour, y = Proportion, fill = Response)) +
+  scale_x_continuous(limits = c(7, 20)) +
+  geom_bar(stat = 'identity', col = 'black', width = 0.9) +
+  scale_fill_manual(values = c('#21908CFF', '#FDE725FF')) +
+  theme_minimal() +
+  theme(plot.title = element_text(face = 'bold', size = 20, hjust = 0.5),
+        axis.title = element_text(face = 'bold', size = 24),
+        axis.text.x = element_text(face = 'bold', size = 20),
+        axis.text.y = element_text(face = 'bold', size = 12),
+        strip.text.x = element_text(face = 'bold', size = 20),
+        plot.caption = element_text(size = 14),
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank())
+ggsave('../figures/time_response.png', width = 11, height = 4)
+```
+
+Check whether there is an effect:
+
+```{r}
+time_mdl <- brm(Response ~ Hour,
+              data = xdata,
+              family = bernoulli,
+              init = 0,
+              chains = 8,
+              warmup = 2000,
+              iter = 8000,
+              seed = 42,
+              prior = my_priors,
+              control = my_controls)
+
+time_null <- brm(Response ~ 1,
+              data = xdata,
+              family = bernoulli,
+              init = 0,
+              chains = 8,
+              warmup = 2000,
+              iter = 8000,
+              seed = 42,
+              control = my_controls)
+save(time_mdl, file = '../models/time_mdl.RData')
+save(time_null, file = '../models/time_null.RData')
+```
+
+Check:
+
+```{r}
+summary(time_mdl)
+```
+
+Do a posterior predictive check on this:
+
+```{r}
+pp_check(time_mdl, nsamples = 1000)
+```
+
+## Exploring the influence of the week day:
+
+Use week days information:
+
+```{r}
+xdata <- mutate(xdata,
+                WeekDay = weekdays(StartTime))
+```
+
+Count week days:
+
+```{r}
+xdata %>% count(WeekDay)
+```
+
+Count week days per Experiment:
+
+```{r}
+xdata %>% count(Experiment, WeekDay)
+```
+
+Proportions of "Monday/Friday" responses per day:
+
+```{r}
+with(xdata, table(WeekDay, Response))
+round(prop.table(with(xdata, table(WeekDay, Response)), 1), 2)
+```
+
+
+Plot weekday against Monday/Friday responses:
+
+```{r}
+weekdays <- c('Monday', 'Tuesday', 'Wednesday', 'Thursday',
+              'Friday', 'Saturday', 'Sunday')
+xdata %>% group_by(WeekDay) %>% 
+  count(Response) %>% 
+  filter(WeekDay != 'Tuesday') %>% 
+  spread(Response, n, fill = 0) %>% 
+  mutate(Friday = Friday / (Friday + Monday),
+         Monday = 1 - Friday) %>%
+  gather(key = 'Response', value = 'Proportion', -WeekDay) %>%
+  ungroup %>% 
+  mutate(WeekDay = factor(WeekDay, levels = weekdays)) %>% bind_rows(tibble(WeekDay = factor(c('Tuesday', 'Tuesday'), levels = weekdays), Response = c('Monday', 'Friday'), Proportion = c(0, 0))) %>% 
+  ggplot(aes(x = WeekDay, y = Proportion, fill = Response)) +
+  geom_bar(stat = 'identity', col = 'black', width = 0.7) +
+  scale_fill_manual(values = c('#21908CFF', '#FDE725FF')) +
+  xlab('\nDay of the week') +
+  theme_minimal() +
+  theme(plot.title = element_text(face = 'bold', size = 20, hjust = 0.5),
+        axis.title = element_text(face = 'bold', size = 24),
+        axis.text.x = element_text(face = 'bold', size = 16),
+        axis.text.y = element_text(face = 'bold', size = 12),
+        strip.text.x = element_text(face = 'bold', size = 20),
+        plot.caption = element_text(size = 14),
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank())
+ggsave('../figures/weekday.png', width = 11.5, height = 4)
+```
+
+Make a model of this:
+
+```{r}
+xdata <- mutate(xdata,
+                WeekDay = factor(WeekDay),
+                WeekDay = relevel(WeekDay, ref = 'Wednesday'))
+xdata_week <- filter(xdata,
+                     WeekDay != 'Tuesday')
+weekday_mdl <- brm(Response ~ WeekDay,
+              data = xdata_week,
+              family = bernoulli,
+              init = 0,
+              chains = 8,
+              warmup = 2000,
+              iter = 8000,
+              seed = 42,
+              prior = my_priors,
+              control = my_controls)
+weekday_null <- brm(Response ~ 1,
+              data = xdata_week,
+              family = bernoulli,
+              init = 0,
+              chains = 8,
+              warmup = 2000,
+              iter = 8000,
+              seed = 42,
+              control = my_controls)
+save(weekday_mdl, file = '../models/weekday_mdl.RData')
+save(weekday_null, file = '../models/weekday_null.RData')
+```
+
+Check the model:
+
+```{r}
+summary(weekday_mdl)
+```
+
+Perform a LOO comparison:
+
+```{r}
+weekday_loo <- loo(weekday_mdl, reloo = TRUE)
+weekday_loo_null <- loo(weekday_null, reloo = TRUE)
+loo_compare(weekday_loo_null, weekday_loo)
+```
+
+Marginal effects:
+
+```{r}
+marginal_effects(weekday_mdl, effects = 'WeekDay')
+```
+
+That completes this analysis.
+
+

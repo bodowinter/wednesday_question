@@ -1,0 +1,564 @@
+---
+title: "Experiment 4 - Analysis"
+author: "Bodo Winter"
+date: "7/3/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Preliminaries:
+
+Load packages:
+
+```{r}
+library(tidyverse)
+library(brms)
+```
+
+Load in data:
+
+```{r}
+header <- readLines('../data/E4_change.csv', n = 1)
+E4 <- read_csv('../data/E4_change.csv', skip = 2,
+               col_names = FALSE)
+colnames(E4) <- unlist(str_split(header, ','))
+```
+
+Rename relevant columns:
+
+```{r}
+E4 <- rename(E4,
+             Control = MathQuestion,
+             Age = age,
+             Gender = gender,
+             Handedness = handedness,
+             NativeLanguage = language,
+             Condition = `DO-BR-FL_10`,
+             Comments = OpenEnded,
+             Notice = GestureNotice,
+             ViewN = VideoNTimes,
+             ViewYes = VideoCompletion,
+             IP = V6,
+             StartTime = V8,
+             FinishTime = V9)
+```
+
+Get all_responses:
+
+```{r}
+# Initialize empty column for responses:
+
+E4$Response <- NA
+
+# The relevant columns all have '_resp':
+
+these_cols <- str_detect(colnames(E4), 'E4_')
+
+# The relevant columns all have '_resp':
+
+for (i in 1:nrow(E4)) {
+  this <- unlist(E4[i, these_cols])
+  names(this) <- c()
+  if (!all(is.na(this))) {
+    E4[i, ]$Response <- this[!is.na(this)]
+  }
+  }
+```
+
+There's some issue with the file, let's get rid of the respective columns:
+
+Select subset of dataframe with relevant columns:
+
+```{r}
+E4 <- select(E4,
+             ViewYes:NativeLanguage, IP, Notice, Condition,  StartTime, FinishTime, Response)
+```
+
+Exclude those partials that did not respond and report loss. For proper reporting (since there will be several rounds of exclusion), it makes sense to create a tibble:
+
+```{r}
+# Original tibble:
+
+excl_tib <- tibble(N = nrow(E4), Type = 'Original')
+
+# Those that didn't respond:
+
+E4 <- filter(E4, !is.na(Response))
+
+# New tibble to keep track of exclusions:
+
+new_tib <- tibble(N = nrow(E4), Type = 'after partials')
+excl_tib <- bind_rows(excl_tib, new_tib)
+```
+
+Exclude those that are duplicated responses (from the same IP):
+
+```{r}
+# Those that didn't respond:
+
+these_IPs <- filter(E4, duplicated(IP)) %>% pull(IP)
+E4 <- filter(E4, !(IP %in% these_IPs))
+
+# New tibble to keep track of exclusions:
+
+new_tib <- tibble(N = nrow(E4), Type = 'after duplicates')
+excl_tib <- bind_rows(excl_tib, new_tib)
+```
+
+Get rid of non-native speakers:
+
+```{r}
+# Vector of things to exclude:
+
+excludes <- c('Malayalam', 'Portuguese', 'Hindi', 'french and arabic', 'Bengali')
+
+# Exclude:
+
+E4 <- filter(E4, !(NativeLanguage %in% excludes))
+E4 <- filter(E4, !is.na(NativeLanguage))
+
+# New tibble to keep track of exclusions:
+
+new_tib <- tibble(N = nrow(E4), Type = 'after non-natives')
+excl_tib <- bind_rows(excl_tib, new_tib)
+```
+
+Get rid of people who couldn't view the videos:
+
+```{r}
+# Exclude:
+
+E4 <- filter(E4, ViewYes == 'Yes')
+
+# Get rid of those that report to have had a viewing problem:
+
+excludes <- c("It was slightly laggy",
+              "The slow buffering made me watch it a second time",
+              "yes ti cut off twice",
+              "The video lagged quite a bit",
+              "Lagged at start but then restarted for it to play completly",
+              "I could not respond or type, and then the page advanced after being \"frozen\" but it sounded like he said something had been changed, is all I caught. (Assuming the incredible echo was deliberate? Could not understand what he said due to the echo.)",
+              "Yes, lag.",
+              "The only issue I had was that it was a little fuzzy and he spoke VERY fast",
+              "Yes,  Buffering and stutter while on a very fast connection.  The video would pause each time the man spoke making it difficult to hear the whole sentence.",
+              "at first the video played with no sound or video until I clicked the arrow on the next time.",
+              "Yes. First time video wasn't clear and loading many times.",
+              "The video had problems loading, and the audio stuttered, it was hard to understand the first time.",
+              "The video initially skipped a little, so I restarted it to watch it completely",
+              "yes",
+              "Yes, my volume was off the first time and then too down the second time. In general audio was not clear",
+              "Did not want to load completely the first time",
+              "Only on my part, my speakers messed up the first go around.",
+              "audio didnt play the first few seconds first time",
+              "audio issues...",
+              "yeah i played it but it paused and buffered at \"next wednesday's meeting has--\"",
+              "yeah, i heard some obviously discernible premise that meaningful research wouldnt deign to endorse as sufficiently veiled, however de facto presumptuous the notion of correlative suggestivity being of any epistemological relevance whatsoever is. couldve been an audio glitch though",
+              "The video was lagging and buffered at the halfway point.",
+              "choppy video due to connection I'm guessing",
+              "It was quite laggy and stopped in the middle.",
+              "hand movements a little blurry",
+              "no sound the first time I played it",
+              "No issues, but I played it a second time because my audio was on, but a bit low and I couldn't hear it all the first time")
+
+# Exclude these:
+
+exclude_ids <- which(E4$VideoIssues %in% excludes)
+E4 <- E4[-exclude_ids, ]
+
+# New tibble to keep track of exclusions:
+
+new_tib <- tibble(N = nrow(E4), Type = 'after viewing problems')
+excl_tib <- bind_rows(excl_tib, new_tib)
+```
+
+Process viewing times:
+
+```{r}
+# Make it into lowercase for easier processing:
+
+E4 <- mutate(E4, ViewN = str_to_lower(ViewN))
+
+# Create a table that matches responses to counts:
+
+ViewN <- c('1', 'once', 'one', 'once, but i heard it play three times', 
+           '2', 'two', 'twice', 'i viewed the video twice.', 'yes able to view 2 times i saw that video',
+           '3 times', '3',
+           '4', '5')
+ViewCount = c(1, 1, 1, 1,
+              2, 2, 2, 2, 2,
+              3, 3,
+              4, 5)
+key <- tibble(ViewN, ViewCount)
+
+# Merge these counts into the data frame:
+
+E4 <- left_join(E4, key)
+```
+
+Assess whether the viewing times depend on condition:
+
+```{r}
+E4 %>% group_by(Condition) %>%
+  summarize(sum = sum(ViewCount, na.rm = TRUE))
+```
+
+Not massive differences...
+
+Create the Monday/Friday column:
+
+```{r}
+E4 <- mutate(E4, Response = str_to_lower(Response))
+
+E4$RespClean <- NA
+E4[str_detect(E4$Response, 'monday'), ]$RespClean <- 'monday'
+E4[str_detect(E4$Response, 'friday'), ]$RespClean <- 'friday'
+
+# Exclude those that responded neither monday nor friday:
+
+E4 <- filter(E4, !is.na(RespClean))
+
+# New tibble to keep track of exclusions:
+
+new_tib <- tibble(N = nrow(E4), Type = 'after wrong-day responders')
+excl_tib <- bind_rows(excl_tib, new_tib)
+```
+
+Code for multiple views versus single views:
+
+```{r}
+# # If you wanted to take only those that had only one view:
+# 
+# E4 <- filter(E4, ViewCount == 1)
+# 
+# # Multiple viewers as a separate variable:
+# 
+# E4 <- mutate(E4,
+#              MultipleView = ifelse(ViewCount == 1, 'single', 'multiple'))
+# 
+# # New tibble to keep track of exclusions (only necessary if excluded):
+# 
+# new_tib <- tibble(N = nrow(E4), Type = 'after multiple viewers')
+# excl_tib <- bind_rows(excl_tib, new_tib)
+```
+
+Code condition column:
+
+```{r}
+conditions <- str_split(E4$Condition, pattern = '_', simplify = TRUE)
+
+E4$Language <- conditions[, 2]
+E4$Direction <- conditions[, 3]
+```
+
+Get rid of the original response column:
+
+```{r}
+E4 <- mutate(E4,
+             Response = RespClean) %>% 
+  select(-RespClean)
+```
+
+For plotting make it so that the Response factor is "monday", then "friday" (easier: from left to right).
+
+```{r}
+E4 <- mutate(E4,
+             Response = str_to_title(Response),
+             Response = factor(Response, levels = c('Monday', 'Friday')))
+```
+
+Change the labels in the Gesture and Language columns to make them better for plotting, and order factors for plotting:
+
+```{r}
+E4 <- mutate(E4,
+             Direction = ifelse(Direction == 'FORW', 'forward', 'backward'),
+             DirectionPlot = str_c(Direction, '\ngesture'),
+             Direction = factor(Direction,
+                                levels = c('backward', 'forward')),
+             DirectionPlot = factor(DirectionPlot, levels = c('backward\ngesture', 'forward\ngesture')),
+             Language = factor(Language,
+                               levels = c('move', 'change')))
+```
+
+Overview of exclusions:
+
+```{r}
+excl_tib$Exclusions <- c(0, abs(diff(excl_tib$N)))
+excl_tib$Prop <- NA
+for (i in 2:nrow(excl_tib)) {
+  excl_tib[i, ]$Prop <- excl_tib[i, ]$N / excl_tib[i - 1, ]$N
+}
+excl_tib <- mutate(excl_tib, Prop = 1 - Prop)
+excl_tib
+```
+
+And the overall exclusion:
+
+```{r}
+excl_tib[1, ]$N - excl_tib[nrow(excl_tib), ]$N
+(excl_tib[1, ]$N - excl_tib[nrow(excl_tib), ]$N) / excl_tib[1, ]$N
+```
+
+Check the comprehension question:
+
+```{r}
+all(E4$Control == 13)
+```
+
+What's reported in the paper is the following, the number of participants that are actually participants of the study (N = 319) compared to the 232 participants that are included in the analysis.
+
+```{r}
+orig <- filter(excl_tib, Type == 'after duplicates')$N
+final <- filter(excl_tib, Type == 'after wrong-day responders')$N
+orig - final
+1 - (final / orig)
+```
+
+What does the total sample consist of in terms of demographics?
+
+```{r}
+table(E4$Gender)
+mean(as.numeric(E4$Age), na.rm = TRUE)
+range(as.numeric(E4$Age), na.rm = TRUE)
+```
+
+## Descriptive stats and visualizations:
+
+First, how many were aware of the gestures?
+
+```{r}
+E4 %>% count(Notice, sort = TRUE)
+```
+
+Lots of them.
+
+Tabulations of the main result:
+
+```{r}
+E4 %>% count(Response)
+with(E4, prop.table(table(E4$Response)))
+```
+
+Overall many more Monday responses.
+
+Effect of direction:
+
+```{r}
+with(E4, table(Direction, Response))
+round(with(E4, prop.table(table(Direction, Response), 1)), 2)
+```
+
+Effect of language:
+
+```{r}
+with(E4, table(Language, Response))
+round(with(E4, prop.table(table(Language, Response), 1)), 2)
+```
+
+
+## Publication ready stacked bar plot:
+
+Stacked bar plot with percentages:
+
+```{r, fig.width = 9, fig.height = 5}
+E4 %>%
+  count(Language, DirectionPlot, Response) %>%
+  spread(Response, n) %>%
+  mutate(Sum = Monday + Friday,
+         Monday = Monday / Sum,
+         Friday = Friday / Sum) %>%
+  select(-Sum) %>%
+  gather(key = 'Response', value = 'n',
+         -(Language:DirectionPlot)) %>%
+  mutate(Response = factor(Response,
+                           levels = c('Monday', 'Friday'))) %>%
+  rename(Proportion = n) %>% 
+  ggplot(aes(x = DirectionPlot, y = Proportion, fill = Response)) +
+  geom_bar(stat = 'identity', col = 'black',
+           position = position_stack(reverse = TRUE),
+           width = 0.5) + 
+    scale_fill_manual(values = c('#FDE725FF', '#21908CFF')) +
+  theme_minimal() +
+  theme(legend.position = 'right') +
+  facet_wrap(~Language) +
+  labs(title = 'Monday/Friday responses by\nLanguage and Gesture Direction',
+       caption = str_c('N = ', nrow(E4), ', Amazon Mechanical Turk')) +
+  ylab('Proportion\n') +
+  xlab('') +
+  theme(plot.title = element_text(face = 'bold', size = 20, hjust = 0.5),
+        axis.title = element_text(face = 'bold', size = 24),
+        axis.text.x = element_text(face = 'bold', size = 20),
+        axis.text.y = element_text(face = 'bold', size = 12),
+        strip.text.x = element_text(face = 'bold', size = 20),
+        plot.caption = element_text(size = 14),
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank())
+ggsave('../figures/experiment4.png', width = 9, height = 6)
+```
+
+## Is there any indication of the direction effect being modulated by likeability?
+
+Convert the scales for likeability:
+
+```{r}
+E4 <- mutate(E4,
+       Likeability = ifelse(Likeability == 'strongly disagree', '1', Likeability),
+       Likeability = ifelse(Likeability == 'slightly disagree', '2', Likeability),
+       Likeability = ifelse(Likeability == 'slightly agree', '3', Likeability),
+       Likeability = ifelse(Likeability == 'strongly agree', '4', Likeability),
+       Likeability = as.numeric(Likeability),
+       Warm = ifelse(Warm == 'strongly disagree', '1', Warm),
+       Warm = ifelse(Warm == 'slightly disagree', '2', Warm),
+       Warm = ifelse(Warm == 'slightly agree', '3', Warm),
+       Warm = ifelse(Warm == 'strongly agree', '4', Warm),
+       Warm = as.numeric(Warm),
+       Friendly = ifelse(Friendly == 'strongly disagree', '1', Friendly),
+       Friendly = ifelse(Friendly == 'slightly disagree', '2', Friendly),
+       Friendly = ifelse(Friendly == 'slightly agree', '3', Friendly),
+       Friendly = ifelse(Friendly == 'strongly agree', '4', Friendly),
+       Friendly = as.numeric(Friendly),
+       Approachability = ifelse(Approachability == 'strongly disagree', '1', Approachability),
+       Approachability = ifelse(Approachability == 'slightly disagree', '2', Approachability),
+       Approachability = ifelse(Approachability == 'slightly agree', '3', Approachability),
+       Approachability = ifelse(Approachability == 'strongly agree', '4', Approachability),
+       Approachability = as.numeric(Approachability))
+```
+
+Create sum scores:
+
+```{r}
+E4 <- mutate(E4,
+             LikeScale = Friendly + Warm + Approachability + Likeability,
+             LikeScale_c = LikeScale - mean(LikeScale))
+```
+
+## Model this with logistic regression:
+
+Sum-code the categorical predictors:
+
+```{r}
+contrasts(E4$Direction) <- contr.sum(2) / 2 * -1
+contrasts(E4$Language) <- contr.sum(2) / 2 * -1
+```
+
+Set the parameters for a Bayesian analysis:
+
+```{r}
+# For parallel processing:
+
+options(mc.cores=parallel::detectCores())
+
+# For handling the MCMC sampling:
+
+my_controls <- list(adapt_delta = 0.99,
+                    max_treedepth = 13)
+```
+
+Set regularizing priors on betas:
+
+```{r}
+my_priors <- c(prior(normal(0, 1), class = b))
+```
+
+Specify and run the model:
+
+```{r, message = FALSE}
+E4_mdl <- brm(Response ~ Direction * Language,
+              data = E4,
+              family = bernoulli,
+              init = 0,
+              chains = 8,
+              seed = 42,
+              warmup = 2000,
+              iter = 8000,
+              prior = my_priors,
+              control = my_controls)
+save(E4_mdl, file = '../models/E4_mdl.RData')
+```
+
+Summarize the model:
+
+```{r}
+summary(E4_mdl)
+```
+
+Plot marginal effects:
+
+```{r}
+marginal_effects(E4_mdl, effects = 'Direction:Language')
+```
+
+Check how many of the posteriors were in the predicted direction:
+
+```{r}
+# To aid interpretation:
+
+levels(E4$Response)
+contrasts(E4$Direction)
+
+# Extract posterior samples:
+
+mypost <- posterior_samples(E4_mdl)
+
+# Posterior probability of the language effect being above 0:
+
+sum(mypost$b_Direction1 > 0) / nrow(mypost)
+
+# Same for the language effect:
+
+sum(mypost$b_Language1 > 0) / nrow(mypost)
+
+# Same for the hand shape effect:
+
+sum(mypost$'b_Direction1:Language1' > 0) / nrow(mypost)
+```
+
+## Check influence of likeability on direction:
+
+Model with likeability * direction interaction.
+
+```{r}
+E4_social_mdl <- brm(Response ~ Direction * LikeScale_c,
+              data = E4,
+              family = bernoulli,
+              init = 0,
+              chains = 8,
+              seed = 42,
+              warmup = 2000,
+              iter = 8000,
+              prior = my_priors,
+              control = my_controls)
+save(E4_social_mdl, file = '../models/E4_social_mdl.RData')
+```
+
+Check:
+
+```{r}
+summary(E4_social_mdl)
+```
+
+Get the posterior probability for the interaction being above zero:
+
+```{r}
+mypost <- posterior_samples(E4_social_mdl)
+sum(mypost$'b_Direction1:LikeScale_c' > 0) / nrow(mypost)
+```
+
+
+Check the results of this:
+
+```{r, fig.width = 8, fig.height = 6}
+marginal_effects(E4_social_mdl, effects = 'Direction:LikeScale_c')
+```
+
+Save the results outside for subsequent meta-analysis:
+
+```{r}
+write_csv(E4, '../data/cleaned_data/E4_cleaned.csv')
+```
+
+This completes this analysis.
+
+

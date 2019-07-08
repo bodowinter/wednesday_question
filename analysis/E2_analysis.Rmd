@@ -1,0 +1,755 @@
+---
+title: "Experiment 2 - Analysis"
+author: "Bodo Winter"
+date: "7/3/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Preliminaries:
+
+Load packages:
+
+```{r}
+library(tidyverse)
+library(brms)
+```
+
+Load in data:
+
+```{r}
+header <- readLines('../data/E2_handshape.csv', n = 1)
+E2 <- read_csv('../data/E2_handshape.csv', skip = 2,
+               col_names = FALSE)
+colnames(E2) <- unlist(str_split(header, ','))
+```
+
+Rename relevant columns:
+
+```{r}
+E2 <- rename(E2,
+             Control = MathQuestion,
+             Age = age,
+             Gender = gender,
+             Handedness = handedness,
+             NativeLanguage = language,
+             Condition = `DO-BR-FL_10`,
+             Comments = OpenEnded,
+             Notice = GestureNotice,
+             ViewN = VideoNTimes,
+             ViewYes = VideoCompletion,
+             IP = V6,
+             StartTime = V8,
+             FinishTime = V9)
+```
+
+Get all_responses:
+
+```{r}
+# Initialize empty column for responses:
+
+E2$Response <- NA
+
+# The relevant columns all have '_resp':
+
+these_cols <- str_detect(colnames(E2), 'E2_')
+
+# The relevant columns all have '_resp':
+
+for (i in 1:nrow(E2)) {
+  this <- unlist(E2[i, these_cols])
+  names(this) <- c()
+  if (!all(is.na(this))) {
+    E2[i, ]$Response <- this[!is.na(this)]
+  }
+  }
+```
+
+There's some issue with the file, let's get rid of the respective columns:
+
+Select subset of dataframe with relevant columns:
+
+```{r}
+E2 <- select(E2,
+             ViewYes:NativeLanguage, IP, Notice, Condition, StartTime, FinishTime, Response)
+```
+
+Exclude those partials that did not respond and report loss. For proper reporting (since there will be several rounds of exclusion), it makes sense to create a tibble:
+
+```{r}
+# Original tibble:
+
+excl_tib <- tibble(N = nrow(E2), Type = 'Original')
+
+# Those that didn't respond:
+
+E2 <- filter(E2, !is.na(Response))
+
+# New tibble to keep track of exclusions:
+
+new_tib <- tibble(N = nrow(E2), Type = 'after partials')
+excl_tib <- bind_rows(excl_tib, new_tib)
+```
+
+Exclude those that are duplicated responses (from the same IP):
+
+```{r}
+# Those that didn't respond:
+
+these_IPs <- filter(E2, duplicated(IP)) %>% pull(IP)
+E2 <- filter(E2, !(IP %in% these_IPs))
+
+# New tibble to keep track of exclusions:
+
+new_tib <- tibble(N = nrow(E2), Type = 'after duplicates')
+excl_tib <- bind_rows(excl_tib, new_tib)
+```
+
+Get rid of non-native speakers:
+
+```{r}
+# Vector of things to exclude:
+
+excludes <- c('Russian, English', 'Nepali', 'Telugu')
+
+# Exclude:
+
+E2 <- filter(E2, !(NativeLanguage %in% excludes))
+
+# New tibble to keep track of exclusions:
+
+new_tib <- tibble(N = nrow(E2), Type = 'after non-natives')
+excl_tib <- bind_rows(excl_tib, new_tib)
+```
+
+Get rid of people who couldn't view the videos:
+
+```{r}
+# Exclude:
+
+E2 <- filter(E2, ViewYes == 'Yes')
+
+# Get rid of those that report to have had a viewing problem:
+
+excludes <- c("Video was lagging",
+              "it buffered for a few seconds while viewing then continued.. that is why I had to view twice",
+              "The video buffered a couple of times so I rewatched after it had completely loaded",
+              "no had a little buffer but alright",
+              "It was a bit glitchy.",
+              "it took a long time to load and was a little choppy",
+              "Yes, it didn't play correctly the first time.",
+              "The picture took two plays to load.")
+
+# Exclude these:
+
+exclude_ids <- which(E2$VideoIssues %in% excludes)
+E2 <- E2[-exclude_ids, ]
+
+excludes <- c("Twice because it loaded slowly.",
+              "2 days")
+exclude_ids <- which(E2$ViewN %in% excludes)
+E2 <- E2[-exclude_ids, ]
+
+# New tibble to keep track of exclusions:
+
+new_tib <- tibble(N = nrow(E2), Type = 'after viewing problems')
+excl_tib <- bind_rows(excl_tib, new_tib)
+```
+
+Process viewing times:
+
+```{r}
+# Make it into lowercase for easier processing:
+
+E2 <- mutate(E2, ViewN = str_to_lower(ViewN))
+
+# Create a table that matches responses to counts:
+
+ViewN <- c('1', 'once', 'one', "1.5", "once.", "1 time",
+           '2', 'two', 'twice', '2 times',
+           'three', '3', '3 because i had a hard time understanding what he was saying because of his accent.', "3 times",
+           "4", "5")
+ViewCount = c(1, 1, 1, 1, 1, 1,
+              2, 2, 2, 2,
+              3, 3, 3, 3,
+              4, 5)
+key <- tibble(ViewN, ViewCount)
+
+# Merge these counts into the data frame:
+
+E2 <- left_join(E2, key)
+```
+
+Assess whether the viewing times depend on condition:
+
+```{r}
+E2 %>% group_by(Condition) %>% 
+  summarize(sum = sum(ViewCount))
+```
+
+Not massive differences...
+
+Create the Monday/Friday column:
+
+```{r}
+E2 <- mutate(E2, Response = str_to_lower(Response))
+
+E2$RespClean <- NA
+E2[str_detect(E2$Response, 'monday'), ]$RespClean <- 'monday'
+E2[str_detect(E2$Response, 'friday'), ]$RespClean <- 'friday'
+
+# Exclude those that responded neither monday nor friday:
+
+E2 <- filter(E2, !is.na(RespClean))
+
+# New tibble to keep track of exclusions:
+
+new_tib <- tibble(N = nrow(E2), Type = 'after wrong-day responders')
+excl_tib <- bind_rows(excl_tib, new_tib)
+```
+
+Code for multiple views versus single views:
+
+```{r}
+# If you wanted to take only those that had only one view:
+
+# E2 <- filter(E2, ViewCount == 1)
+
+# Multiple viewers as a separate variable:
+
+E2 <- mutate(E2,
+             MultipleView = ifelse(ViewCount == 1, 'single', 'multiple'))
+
+# New tibble to keep track of exclusions (only necessary if excluded):
+
+# new_tib <- tibble(N = nrow(E2), Type = 'after multiple viewers')
+# excl_tib <- bind_rows(excl_tib, new_tib)
+```
+
+Code condition column:
+
+```{r}
+conditions <- str_split(E2$Condition, pattern = '_', simplify = TRUE)
+
+E2$HandNumber <- conditions[, 2]
+E2$HandShape <- conditions[, 3]
+E2$Direction <- conditions[, 4]
+```
+
+Get rid of the original response column:
+
+```{r}
+E2 <- mutate(E2,
+             Response = RespClean) %>% 
+  select(-RespClean)
+```
+
+For plotting make it so that the Response factor is "monday", then "friday" (easier: from left to right).
+
+```{r}
+E2 <- mutate(E2,
+             Response = str_to_title(Response),
+             Response = factor(Response, levels = c('Monday', 'Friday')))
+```
+
+Change the labels in the Gesture and Language columns to make them better for plotting, and order factors for plotting:
+
+```{r}
+E2 <- mutate(E2,
+             HandShape = ifelse(HandShape == 'FLAT', 'flat', 'push'),
+             HandShape = factor(HandShape),
+             Direction = ifelse(Direction == 'FORW', 'forward', 'backward'),
+             DirectionPlot = str_c(Direction, '\ngesture'),
+             Direction = factor(Direction,
+                                levels = c('backward', 'forward')),
+             DirectionPlot = factor(DirectionPlot, levels = c('forward\ngesture', 'backward\ngesture')),
+             HandNumber = ifelse(HandNumber == 'SH', 'single-handed', 'two-handed'),
+             HandNumber = factor(HandNumber))
+```
+
+Overview of exclusions:
+
+```{r}
+excl_tib$Exclusions <- c(0, abs(diff(excl_tib$N)))
+excl_tib$Prop <- NA
+for (i in 2:nrow(excl_tib)) {
+  excl_tib[i, ]$Prop <- excl_tib[i, ]$N / excl_tib[i - 1, ]$N
+}
+excl_tib <- mutate(excl_tib, Prop = 1 - Prop)
+excl_tib
+```
+
+And the overall exclusion:
+
+```{r}
+excl_tib[1, ]$N - excl_tib[nrow(excl_tib), ]$N
+(excl_tib[1, ]$N - excl_tib[nrow(excl_tib), ]$N) / excl_tib[1, ]$N
+```
+
+
+What's reported in the paper is the following, the number of participants that are actually participants of the study (N = 239) compared to the 191 participants that are included in the analysis.
+
+```{r}
+orig <- filter(excl_tib, Type == 'after duplicates')$N
+final <- filter(excl_tib, Type == 'after wrong-day responders')$N
+orig - final
+1 - (final / orig)
+```
+
+Check the comprehension question:
+
+```{r}
+all(E1$Control == 13)
+```
+
+What does the total sample consist of in terms of demographics?
+
+```{r}
+table(E2$Gender)
+mean(as.numeric(E2$Age), na.rm = TRUE)
+range(as.numeric(E2$Age), na.rm = TRUE)
+```
+
+
+## Descriptive stats and visualizations:
+
+First, how many were aware of the gestures?
+
+```{r}
+E2 %>% count(Notice, sort = TRUE)
+```
+
+Lots of them.
+
+Tabulations of the main result:
+
+```{r}
+E2 %>% count(Response)
+round(prop.table(table(E2$Response)), 2)
+```
+
+Overall many more Monday responses.
+
+```{r}
+with(E2, table(Direction, Response))
+round(prop.table(with(E2, table(Direction, Response)), 1), 2)
+```
+
+HandShape effect:
+
+```{r}
+with(E2, table(HandShape, Response))
+round(prop.table(with(E2, table(HandShape, Response)), 1), 2)
+```
+
+Hand number / direction effect:
+
+```{r}
+xtab <- with(E2, table(Direction, Response, HandNumber))
+single <- xtab[, , 1]
+two <- xtab[, , 2]
+single
+two
+prop.table(single, 1)
+prop.table(single, 2)
+
+```
+
+More Monday responses when the language is backwards.
+
+```{r}
+E2 %>% count(HandNumber, Direction, Response)
+```
+
+Handshape:
+
+```{r}
+E2 %>% count(HandShape, Direction, Response)
+```
+
+Looks to be some stuff.
+
+```{r, fig.width = 10, fig.height = 6}
+E2 %>%
+  count(Direction, HandShape, Response) %>%
+  ggplot(aes(x = HandShape, y = n, fill = Response)) +
+  geom_bar(stat = 'identity', col = 'black',
+           position = 'dodge') + 
+  scale_fill_viridis_d(option = 'D', direction = -1) +
+  theme_minimal() +
+  ylim(0, 50) +
+  theme(legend.position = 'top') +
+  facet_wrap(~Direction)
+```
+
+## Publication ready stacked bar plot:
+
+Stacked bar plot with percentages:
+
+```{r, fig.width = 9, fig.height = 5}
+E2 %>%
+  count(HandShape, DirectionPlot, Response) %>%
+  spread(Response, n) %>%
+  mutate(Sum = Monday + Friday,
+         Monday = Monday / Sum,
+         Friday = Friday / Sum) %>%
+  select(-Sum) %>%
+  gather(key = 'Response', value = 'n',
+         -(HandShape:DirectionPlot)) %>%
+  mutate(Response = factor(Response,
+                           levels = c('Monday', 'Friday'))) %>%
+  rename(Proportion = n) %>% 
+  ggplot(aes(x = DirectionPlot, y = Proportion, fill = Response)) +
+  geom_bar(stat = 'identity', col = 'black',
+           position = position_stack(reverse = TRUE),
+           width = 0.5) + 
+  scale_fill_manual(values = c('#FDE725FF', '#21908CFF')) +
+  theme_minimal() +
+  theme(legend.position = 'right') +
+  facet_wrap(~HandShape) +
+  labs(title = 'Monday/Friday responses by\nHand Shape and Gesture Direction',
+       caption = str_c('N = ', nrow(E2), ', Amazon Mechanical Turk')) +
+  ylab('Proportion\n') +
+  xlab('') +
+  theme(plot.title = element_text(face = 'bold', size = 20, hjust = 0.5),
+        axis.title = element_text(face = 'bold', size = 24),
+        axis.text.x = element_text(face = 'bold', size = 20),
+        axis.text.y = element_text(face = 'bold', size = 12),
+        strip.text.x = element_text(face = 'bold', size = 20),
+        plot.caption = element_text(size = 14),
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank())
+ggsave('../figures/experiment2_hand_shape.png', width = 9, height = 6)
+```
+
+Same for two-handed versus one-handed:
+
+```{r, fig.width = 9, fig.height = 5}
+E2 %>%
+  count(HandNumber, Direction, Response) %>%
+  spread(Response, n) %>%
+  mutate(Sum = Monday + Friday,
+         Monday = Monday / Sum,
+         Friday = Friday / Sum) %>%
+  select(-Sum) %>%
+  gather(key = 'Response', value = 'n',
+         -(HandNumber:Direction)) %>%
+  mutate(Response = factor(Response,
+                           levels = c('Monday', 'Friday'))) %>%
+  rename(Proportion = n) %>% 
+  ggplot(aes(x = Direction, y = Proportion, fill = Response)) +
+  geom_bar(stat = 'identity', col = 'black',
+           position = position_stack(reverse = TRUE),
+           width = 0.5) + 
+  scale_fill_manual(values = c('#FDE725FF', '#21908CFF')) +
+  theme_minimal() +
+  theme(legend.position = 'right') +
+  facet_wrap(~HandNumber) +
+  labs(title = 'Monday/Friday responses by\nHand Number and Gesture Direction',
+       caption = str_c('N = ', nrow(E2), ', Amazon Mechanical Turk')) +
+  ylab('Proportion\n') +
+  xlab('\nGesture') +
+  theme(plot.title = element_text(face = 'bold', size = 20, hjust = 0.5),
+        axis.title = element_text(face = 'bold', size = 24),
+        axis.text.x = element_text(face = 'bold', size = 20),
+        axis.text.y = element_text(face = 'bold', size = 12),
+        strip.text.x = element_text(face = 'bold', size = 20),
+        plot.caption = element_text(size = 14),
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank())
+ggsave('../figures/experiment2_hand_number.png', width = 9, height = 6)
+```
+
+## Is there any indication of the direction effect being modulated by AQ/social skills?
+
+Convert the scales for AQ:
+
+```{r}
+E2 <- mutate(E2,
+       AQ2_face = ifelse(AQ2_face == 'strongly disagree', '1', AQ2_face),
+       AQ2_face = ifelse(AQ2_face == 'slightly disagree', '2', AQ2_face),
+       AQ2_face = ifelse(AQ2_face == 'slightly agree', '3', AQ2_face),
+       AQ2_face = ifelse(AQ2_face == 'strongly agree', '4', AQ2_face),
+       AQ2_face = as.numeric(AQ2_face),
+       AQ1_face = ifelse(AQ1_face == 'strongly disagree', '1', AQ1_face),
+       AQ1_face = ifelse(AQ1_face == 'slightly disagree', '2', AQ1_face),
+       AQ1_face = ifelse(AQ1_face == 'slightly agree', '3', AQ1_face),
+       AQ1_face = ifelse(AQ1_face == 'strongly agree', '4', AQ1_face),
+       AQ1_face = as.numeric(AQ1_face))
+```
+
+Convert the scales for likeability:
+
+```{r}
+E2 <- mutate(E2,
+       Likeability = ifelse(Likeability == 'strongly disagree', '1', Likeability),
+       Likeability = ifelse(Likeability == 'slightly disagree', '2', Likeability),
+       Likeability = ifelse(Likeability == 'slightly agree', '3', Likeability),
+       Likeability = ifelse(Likeability == 'strongly agree', '4', Likeability),
+       Likeability = as.numeric(Likeability),
+       Warm = ifelse(Warm == 'strongly disagree', '1', Warm),
+       Warm = ifelse(Warm == 'slightly disagree', '2', Warm),
+       Warm = ifelse(Warm == 'slightly agree', '3', Warm),
+       Warm = ifelse(Warm == 'strongly agree', '4', Warm),
+       Warm = as.numeric(Warm),
+       Friendly = ifelse(Friendly == 'strongly disagree', '1', Friendly),
+       Friendly = ifelse(Friendly == 'slightly disagree', '2', Friendly),
+       Friendly = ifelse(Friendly == 'slightly agree', '3', Friendly),
+       Friendly = ifelse(Friendly == 'strongly agree', '4', Friendly),
+       Friendly = as.numeric(Friendly),
+       Approachability = ifelse(Approachability == 'strongly disagree', '1', Approachability),
+       Approachability = ifelse(Approachability == 'slightly disagree', '2', Approachability),
+       Approachability = ifelse(Approachability == 'slightly agree', '3', Approachability),
+       Approachability = ifelse(Approachability == 'strongly agree', '4', Approachability),
+       Approachability = as.numeric(Approachability))
+```
+
+Create sum scores:
+
+```{r}
+E2 <- mutate(E2,
+             LikeScale = Friendly + Warm + Approachability + Likeability,
+             AQ = AQ1_face + AQ2_face,
+             LikeScale_c = LikeScale - mean(LikeScale),
+             AQ_c = AQ - mean(AQ))
+```
+
+First, are these two measures correlated?
+
+```{r}
+with(E2, cor.test(LikeScale, AQ))
+```
+
+Weakly correlated.
+
+Next, how do they correspond to the responses. For this, it'll be easiest to categorize people into high and low AQ / LikeScale based on median split ... (this is just for visualization purposes).
+
+```{r}
+# Median split for AQ:
+
+E2$AQ_cat <- NA
+E2[E2$AQ < 5 & !is.na(E2$AQ), ]$AQ_cat <- 'low'
+E2[E2$AQ > 5 & !is.na(E2$AQ), ]$AQ_cat <- 'high'
+
+# Median split for Likeability:
+
+E2$Like_cat <- NA
+E2[E2$LikeScale > 13 & !is.na(E2$LikeScale), ]$Like_cat <- 'high'
+E2[E2$LikeScale < 13 & !is.na(E2$LikeScale), ]$Like_cat <- 'low'
+```
+
+Report the results:
+
+```{r}
+like_pattern <- with(E2, table(Direction, Response, Like_cat))
+high <- like_pattern[, , 1]
+low <- like_pattern[, , 2]
+round(prop.table(high, 1), 2)
+round(prop.table(low, 1), 2)
+```
+
+Visualize the main perspective-relevant result (direction) as a function of AQ:
+
+```{r}
+E2 %>%
+  count(Direction, AQ_cat, Response) %>%
+  filter(!is.na(AQ_cat)) %>% 
+  ggplot(aes(x = Direction, y = n, fill = Response)) +
+  geom_bar(stat = 'identity', col = 'black',
+           position = 'dodge') + 
+  scale_fill_viridis_d(option = 'D', direction = -1) +
+  theme_minimal() +
+  theme(legend.position = 'top') +
+  facet_wrap(~AQ_cat)
+```
+
+Visualize the main perspective-relevant result (direction) as a function of likeability of the person:
+
+```{r}
+E2 %>%
+  count(Direction, Like_cat, Response) %>%
+  filter(!is.na(Like_cat)) %>% 
+  ggplot(aes(x = Direction, y = n, fill = Response)) +
+  geom_bar(stat = 'identity', col = 'black',
+           position = 'dodge') + 
+  scale_fill_viridis_d(option = 'D', direction = -1) +
+  theme_minimal() +
+  theme(legend.position = 'top') +
+  facet_wrap(~Like_cat)
+```
+
+## Model this with logistic regression:
+
+Sum-code the categorical predictors:
+
+```{r}
+contrasts(E2$Direction) <- contr.sum(2) / 2 * -1
+contrasts(E2$HandShape) <- contr.sum(2) / 2 * -1
+contrasts(E2$HandNumber) <- contr.sum(2) / 2 * -1
+```
+
+Set the parameters for a Bayesian analysis:
+
+```{r}
+# For parallel processing:
+
+options(mc.cores=parallel::detectCores())
+
+# For handling the MCMC sampling:
+
+my_controls <- list(adapt_delta = 0.99,
+                    max_treedepth = 13)
+```
+
+Set regularizing priors on betas:
+
+```{r}
+my_priors <- c(prior(normal(0, 1), class = b))
+```
+
+Specify and run the model:
+
+```{r, message = FALSE}
+E2_mdl <- brm(Response ~ Direction * HandShape * HandNumber,
+              data = E2,
+              family = bernoulli,
+              init = 0,
+              chains = 8,
+              warmup = 2000,
+              iter = 8000,
+              prior = my_priors,
+              control = my_controls,
+              seed = 42)
+save(E2_mdl, file = '../models/E2_mdl.RData')
+```
+
+Summarize the model:
+
+```{r}
+summary(E2_mdl)
+```
+
+Plot marginal effects:
+
+```{r}
+conditions <- make_conditions(E2_mdl, 'Direction')
+marginal_effects(E2_mdl, effects = 'HandShape:HandNumber',
+                 conditions = conditions)
+```
+
+Check how many of the posteriors were in the predicted direction:
+
+```{r}
+# To aid interpretation:
+
+levels(E2$Response)
+contrasts(E2$Direction)
+contrasts(E2$HandShape)
+
+# Extract posterior samples:
+
+mypost <- posterior_samples(E2_mdl)
+
+# Posterior probability of the language effect being above 0:
+
+sum(mypost$b_Direction1 > 0) / nrow(mypost)
+
+# Same for the hand shape effect:
+
+sum(mypost$b_HandShape1 > 0) / nrow(mypost)
+
+# Same for the hand shape effect:
+
+sum(mypost$b_HandNumber1 > 0) / nrow(mypost)
+
+# Check interaction with hand number:
+
+sum(mypost$'b_Direction1:HandNumber1' > 0) / nrow(mypost)
+```
+
+## Check influence of AQ / likeability on direction:
+
+Model with likeability/AQ * direction interaction.
+
+```{r}
+E2_social_mdl <- brm(Response ~ Direction * (AQ + LikeScale_c),
+              data = E2,
+              family = bernoulli,
+              init = 0,
+              chains = 8,
+              warmup = 2000,
+              iter = 8000,
+              prior = my_priors,
+              seed = 42,
+              control = my_controls)
+save(E2_social_mdl, file = '../models/E2_social_mdl.RData')
+```
+
+Check:
+
+```{r}
+summary(E2_social_mdl)
+```
+
+Values with AQ are discussed with inverted coefficients in the paper (due to how the AQ questions have been coded above).
+
+Check the posterior values:
+
+```{r}
+mypost <- posterior_samples(E2_social_mdl)
+
+# Direction * AQ interaction:
+
+sum(mypost$'b_Direction1:AQ' > 0) / nrow(mypost)
+
+# Direction * likeability interaction:
+
+sum(mypost$'b_Direction1:LikeScale_c' > 0) / nrow(mypost)
+
+# Probability of the likeability interaction being stronger than the AQ interaction?
+
+sum(mypost$'b_Direction1:LikeScale_c' > mypost$'b_Direction1:AQ') / nrow(mypost)
+
+```
+
+
+Plot the LikeScale effect:
+
+```{r, fig.width = 8, fig.height = 6}
+marginal_effects(E2_social_mdl, effects = 'Direction:LikeScale_c')
+```
+
+Save the results outside for subsequent meta-analysis:
+
+```{r}
+write_csv(E2, '../data/cleaned_data/E2_cleaned.csv')
+```
+
+## Planning for other experiments
+
+Find the hand shape for which the effect is strongest:
+
+```{r}
+# Flat hand shape:
+
+E2_tab <- with(filter(E2, HandShape == 'flat'), table(Direction, Response))
+E2_tab
+chisq.test(E2_tab)$statistic
+chisq.test(E2_tab)$stdres
+
+# Push hand shape:
+
+E2_tab <- with(filter(E2, HandShape == 'push'), table(Direction, Response))
+E2_tab
+chisq.test(E2_tab)$statistic
+chisq.test(E2_tab)$stdres
+```
+
+Push and flat about equal.
+
+This completes this analysis.
+
+

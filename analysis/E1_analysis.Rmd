@@ -1,0 +1,554 @@
+---
+title: "Experiment 1 - Analysis"
+author: "Bodo Winter"
+date: "7/3/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Preliminaries:
+
+Load packages:
+
+```{r}
+library(tidyverse)
+library(brms)
+```
+
+Load in data:
+
+```{r}
+header <- readLines('../data/E1_forwardbackward.csv', n = 1)
+E1 <- read_csv('../data/E1_forwardbackward.csv', skip = 2,
+               col_names = FALSE)
+colnames(E1) <- unlist(str_split(header, ','))
+```
+
+Rename relevant columns:
+
+```{r}
+E1 <- rename(E1,
+             Control = MathQuestion,
+             Age = age,
+             Gender = gender,
+             Handedness = handedness,
+             NativeLanguage = language,
+             Condition = `DO-BR-FL_10`,
+             Comments = OpenEnded,
+             Notice = GestureNotice,
+             ViewN = VideoNTimes,
+             ViewYes = VideoCompletion,
+             IP = V6,
+             StartTime = V8,
+             EndTime = V9)
+```
+
+Get all_responses:
+
+```{r}
+# Initialize empty column for responses:
+
+E1$Response <- NA
+
+# The relevant columns all have '_resp':
+
+these_cols <- str_detect(colnames(E1), '_resp')
+
+# The relevant columns all have '_resp':
+
+for (i in 1:nrow(E1)) {
+  this <- unlist(E1[i, these_cols])
+  names(this) <- c()
+  if (!all(is.na(this))) {
+    E1[i, ]$Response <- this[!is.na(this)]
+  }
+  }
+```
+
+Get rid of my test response:
+
+```{r}
+exclude_ids <- which(E1$Comments == 'bodo')
+E1 <- E1[-exclude_ids, ]
+```
+
+Exclude those partials that did not respond and report loss. For proper reporting (since there will be several rounds of exclusion), it makes sense to create a tibble:
+
+```{r}
+# Original tibble:
+
+excl_tib <- tibble(N = nrow(E1), Type = 'Original')
+
+# Those that didn't respond:
+
+E1 <- filter(E1, !is.na(Response))
+
+# New tibble to keep track of exclusions:
+
+new_tib <- tibble(N = nrow(E1), Type = 'after partials')
+excl_tib <- bind_rows(excl_tib, new_tib)
+```
+
+Exclude those that are duplicated responses (from the same IP):
+
+```{r}
+# Those that didn't respond:
+
+these_IPs <- filter(E1, duplicated(IP)) %>% pull(IP)
+E1 <- filter(E1, !(IP %in% these_IPs))
+
+# New tibble to keep track of exclusions:
+
+new_tib <- tibble(N = nrow(E1), Type = 'after duplicates')
+excl_tib <- bind_rows(excl_tib, new_tib)
+```
+
+Select subset of dataframe with relevant columns:
+
+```{r}
+E1 <- select(E1,
+             ViewYes:NativeLanguage, Notice, Condition, IP, Response, StartTime, EndTime)
+```
+
+Get rid of non-native speakers:
+
+```{r}
+# Vector of things to exclude:
+
+excludes <- c('French', '', 'no', 'Vietnamese')
+
+# Exclude:
+
+E1 <- filter(E1, !(NativeLanguage %in% excludes))
+
+# New tibble to keep track of exclusions:
+
+new_tib <- tibble(N = nrow(E1), Type = 'after non-natives')
+excl_tib <- bind_rows(excl_tib, new_tib)
+```
+
+Get rid of people who couldn't view the videos:
+
+```{r}
+# Exclude:
+
+E1 <- filter(E1, ViewYes == 'Yes')
+
+# Get rid of those that report to have had a viewing problem:
+
+excludes <- c("The video didn't load correctly at first, it kept starting and stopping.",
+              "There was a lag in the video that messed up the sync of audio and video that kind of threw me off.",
+              "Mouth did not match the voice in parts.",
+              "The voice of the person is somehow too low, and my computer's speaker cannot play it clearly.")
+
+# Exclude these:
+
+exclude_ids <- which(E1$Comments %in% excludes)
+E1 <- E1[-exclude_ids, ]
+
+excludes <- c("Twice because my sound was not playing properly. I could not hear him at all on the first time.",
+              "I viewed it three times, because I had forgotten my headphones were plugged in.",
+              "2 times because i could not hear it the first time",
+              "I did not see the person in the video move.  All I heard was the voice")
+exclude_ids <- which(E1$ViewN %in% excludes)
+E1 <- E1[-exclude_ids, ]
+
+# New tibble to keep track of exclusions:
+
+new_tib <- tibble(N = nrow(E1), Type = 'after viewing problems')
+excl_tib <- bind_rows(excl_tib, new_tib)
+```
+
+Process viewing times:
+
+```{r}
+# Get rid of that NA response for view N:
+
+E1 <- filter(E1, !is.na(ViewN))
+E1 <- filter(E1, ViewN != '`')
+
+# Make it into lowercase for easier processing:
+
+E1 <- mutate(E1, ViewN = str_to_lower(ViewN))
+
+# Create a table that matches responses to counts:
+
+ViewN <- c('1', 'once', 'one',
+           '2', 'two', 'twice',
+           'three', '3')
+ViewCount = c(1, 1, 1,
+              2, 2, 2,
+              3, 3)
+key <- tibble(ViewN, ViewCount)
+
+# Merge these counts into the data frame:
+
+E1 <- left_join(E1, key)
+```
+
+Assess whether the viewing times depend on condition:
+
+```{r}
+E1 %>% group_by(Condition) %>% 
+  summarize(sum = sum(ViewCount))
+```
+
+Not massive differences...
+
+Create the Monday/Friday column:
+
+```{r}
+E1 <- mutate(E1,
+             Response = str_to_lower(Response))
+
+E1$RespClean <- NA
+E1[str_detect(E1$Response, 'monday'), ]$RespClean <- 'monday'
+E1[str_detect(E1$Response, 'friday'), ]$RespClean <- 'friday'
+E1[E1$Response == "monday or tuesday", ]$RespClean <- NA
+
+# Exclude those that responded neither monday nor friday:
+
+E1 <- filter(E1, !is.na(RespClean))
+
+# New tibble to keep track of exclusions:
+
+new_tib <- tibble(N = nrow(E1), Type = 'after wrong-day responders')
+excl_tib <- bind_rows(excl_tib, new_tib)
+```
+
+Code for multiple views versus single views:
+
+```{r}
+# If you wanted to take only those that had only one view:
+
+# E1 <- filter(E1, ViewCount == 1)
+
+# Multiple viewers as a separate variable:
+
+E1 <- mutate(E1,
+             MultipleView = ifelse(ViewCount == 1, 'single', 'multiple'))
+
+# New tibble to keep track of exclusions (only necessary if excluded):
+
+# new_tib <- tibble(N = nrow(E1), Type = 'after multiple viewers')
+# excl_tib <- bind_rows(excl_tib, new_tib)
+```
+
+Code condition column:
+
+```{r}
+E1 <- separate(E1,
+               Condition,
+               into = c('experiment', 'Cond', 'Gesture', 'Language')) %>%
+  select(-experiment, -Cond)
+```
+
+Get rid of the original response column:
+
+```{r}
+E1 <- mutate(E1,
+             Response = RespClean) %>% 
+  select(-RespClean)
+```
+
+For plotting make it so that the Response factor is "monday", then "friday" (easier: from left to right).
+
+```{r}
+E1 <- mutate(E1,
+             Response = str_to_title(Response),
+             Response = factor(Response, levels = c('Monday', 'Friday')))
+```
+
+Change the labels in the Gesture and Language columns to make them better for plotting:
+
+```{r}
+E1 <- mutate(E1,
+             Gesture = ifelse(Gesture == 'BG', 'backward', 'forward'),
+             GesturePlot = str_c(Gesture, '\ngesture'),
+             Language = ifelse(Language == 'BL', 'backward language', 'forward language'))
+```
+
+Order of factor levels so that it works better for the models below:
+
+```{r}
+E1 <- mutate(E1,
+             Gesture = factor(Gesture, levels = c('forward', 'backward')),
+             GesturePlot = factor(GesturePlot, levels = c('forward\ngesture', 'backward\ngesture')),
+             Language = factor(Language, levels = c('forward language', 'backward language')))
+```
+
+Look at those folks that notice strange accent etc.
+
+```{r}
+# Those who commented on the mismatch or weird gestures:
+
+weirds <- readLines('../data/E1_comments_weird.txt')
+
+# Those who commented on the strangeness of the person or accent:
+
+person <- readLines('../data/E1_comments_person.txt')
+
+# Add this info to the tibble:
+
+E1$Weird <- 'nothing'
+ids <- which(E1$Comments %in% weirds)
+E1[ids, ]$Weird <- 'weird'
+
+E1$Person <- 'nothing'
+ids <- which(E1$Comments %in% person)
+E1[ids, ]$Person <- 'person'
+```
+
+Did all of the participants who 
+
+Overview of exclusions:
+
+```{r}
+excl_tib$Exclusions <- c(0, abs(diff(excl_tib$N)))
+excl_tib$Prop <- NA
+for (i in 2:nrow(excl_tib)) {
+  excl_tib[i, ]$Prop <- excl_tib[i, ]$N / excl_tib[i - 1, ]$N
+}
+excl_tib <- mutate(excl_tib, Prop = 1 - Prop)
+excl_tib
+```
+
+And the overall exclusion:
+
+```{r}
+excl_tib[1, ]$N - excl_tib[nrow(excl_tib), ]$N
+(excl_tib[1, ]$N - excl_tib[nrow(excl_tib), ]$N) / excl_tib[1, ]$N
+```
+
+What's reported in the paper is the following, the number of participants that are actually participants of the study (N = 239) compared to the 191 participants that are included in the analysis.
+
+```{r}
+orig <- filter(excl_tib, Type == 'after duplicates')$N
+final <- filter(excl_tib, Type == 'after wrong-day responders')$N
+orig - final
+1 - (final / orig)
+```
+
+Check the comprehension question:
+
+```{r}
+all(E1$Control == 13)
+```
+
+What does the total sample consist of in terms of demographics?
+
+```{r}
+table(E1$Gender)
+mean(as.numeric(E1$Age), na.rm = TRUE)
+range(as.numeric(E1$Age), na.rm = TRUE)
+```
+
+
+## Descriptive stats and visualizations:
+
+First, how many were aware of the gestures?
+
+```{r}
+E1 %>% count(Notice, sort = TRUE) %>% 
+  mutate(Percentage = str_c(round(n / sum(n), 2) * 100, '%'))
+```
+
+Lots of them noticed the gestures.
+
+Tabulations of the main result:
+
+```{r}
+E1 %>% count(Response)
+prop.table(table(E1$Response))
+```
+
+Overall many more Monday responses.
+
+How does this change with the adverb?
+
+```{r}
+with(E1, table(Language, Response))
+round(prop.table(with(E1, table(Language, Response)), 1), 2)
+```
+
+How does this change with gestural direction?
+
+```{r}
+with(E1, table(Gesture, Response))
+round(prop.table(with(E1, table(Gesture, Response)), 1), 2)
+```
+
+More Monday responses when the language is backward.
+
+```{r}
+E1 %>% count(Language, Gesture, Response)
+```
+
+## Publication ready stacked bar plot:
+
+Stacked bar plot with percentages:
+
+```{r, fig.width = 9, fig.height = 5}
+E1 %>%
+  count(Language, GesturePlot, Response) %>%
+  spread(Response, n) %>%
+  mutate(Sum = Monday + Friday,
+         Monday = Monday / Sum,
+         Friday = Friday / Sum) %>%
+  select(-Sum) %>%
+  gather(key = 'Response', value = 'n',
+         -(Language:GesturePlot)) %>%
+  mutate(Response = factor(Response,
+                           levels = c('Monday', 'Friday'))) %>%
+  rename(Proportion = n) %>% 
+  ggplot(aes(x = GesturePlot, y = Proportion, fill = Response)) +
+  geom_bar(stat = 'identity', col = 'black',
+           position = position_stack(reverse = TRUE),
+           width = 0.5) + 
+  scale_fill_manual(values = c('#FDE725FF', '#21908CFF')) +
+  theme_minimal() +
+  theme(legend.position = 'right') +
+  facet_wrap(~Language) +
+  labs(title = 'Monday/Friday responses by\nLanguage and Gesture Direction',
+       caption = str_c('N = ', nrow(E1), ', Amazon Mechanical Turk')) +
+  ylab('Proportion\n') +
+  xlab('') +
+  theme(plot.title = element_text(face = 'bold', size = 20, hjust = 0.5),
+        axis.title = element_text(face = 'bold', size = 24),
+        axis.text.x = element_text(face = 'bold', size = 20),
+        axis.text.y = element_text(face = 'bold', size = 12),
+        strip.text.x = element_text(face = 'bold', size = 20),
+        plot.caption = element_text(size = 14),
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank())
+ggsave('../figures/experiment1.png', width = 9, height = 6)
+```
+
+## Exploring "weird" self-reports:
+
+Check to what extent these things are moderated by the weirdness factor:
+
+```{r}
+E1 %>%
+  count(Weird, Response) %>%
+  ggplot(aes(x = Weird, y = n, fill = Response)) +
+  geom_bar(stat = 'identity', col = 'black',
+           position = 'dodge') + 
+  scale_fill_viridis_d(option = 'D', direction = -1) +
+  theme_minimal() +
+  theme(legend.position = 'top')
+```
+
+Nothing much ... perhaps slightly more Monday respnses for the ones that think it's weird.
+
+Which condition did people think was the weirdest?
+
+```{r}
+E1 %>% count(Language, Gesture, Weird) %>%
+  spread(Weird, n) %>%
+  mutate(Weirdness = weird / (nothing + weird))
+```
+
+What about those that thought something other about the person?
+
+```{r}
+E1 %>% count(Language, Gesture, Person, Response) %>%
+  spread(Response, n, fill = 0) %>%
+  mutate(Monday = Monday / (Monday + Friday))
+```
+
+
+## Model this with logistic regression:
+
+Sum-code the categorical predictors:
+
+```{r}
+contrasts(E1$Language) <- contr.sum(2) / 2
+contrasts(E1$Gesture) <- contr.sum(2) / 2
+```
+
+Set the parameters for a Bayesian analysis:
+
+```{r}
+# For parallel processing:
+
+options(mc.cores=parallel::detectCores())
+
+# For handling the MCMC sampling:
+
+my_controls <- list(adapt_delta = 0.99,
+                    max_treedepth = 13)
+```
+
+Set regularizing priors on betas:
+
+```{r}
+my_priors <- c(prior(normal(0, 1), class = b))
+```
+
+Specify and run the model:
+
+```{r, message = FALSE}
+E1_mdl <- brm(Response ~ Language * Gesture,
+              data = E1,
+              family = bernoulli,
+              init = 0,
+              chains = 8,
+              warmup = 2000,
+              iter = 8000,
+              prior = my_priors,
+              control = my_controls,
+              seed = 42)
+save(E1_mdl, file = '../models/E1_mdl.RData')
+```
+
+Summarize the model:
+
+```{r}
+summary(E1_mdl)
+```
+
+Plot marginal effects:
+
+```{r}
+conditions <- make_conditions(E1_mdl, 'Language')
+marginal_effects(E1_mdl, effects = 'Language:Gesture')
+```
+
+Check how many of the posteriors were in the predicted direction:
+
+```{r}
+# To aid interpretation:
+
+levels(E1$Response)
+contrasts(E1$Language)
+
+# Extract posterior samples:
+
+mypost <- posterior_samples(E1_mdl)
+
+# Posterior probability of the language effect being above 0:
+
+sum(mypost$b_Language1 > 0) / nrow(mypost)
+
+# Same for the language effect:
+
+sum(mypost$b_Gesture1 > 0) / nrow(mypost)
+
+# Same for the interaction effect:
+
+sum(mypost$'b_Language1:Gesture1' > 0) / nrow(mypost)
+```
+
+Save the results outside for subsequent meta-analysis:
+
+```{r}
+write_csv(E1, '../data/cleaned_data/E1_cleaned.csv')
+```
+
+This completes this analysis.
+
+
